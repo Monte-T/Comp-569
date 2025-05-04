@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class HomePage extends StatefulWidget {
   HomePage({Key? key}) : super(key: key);
@@ -10,31 +12,26 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Get the currently logged-in user
   late final User? _user = FirebaseAuth.instance.currentUser;
-
-  // Controllers for item name and quantity input fields
   final _itemController = TextEditingController();
   final _quantityController = TextEditingController();
 
-  // Reference to the Firestore collection for the user's grocery items
-  late final CollectionReference? _itemsRef =
-      _user != null
-          ? FirebaseFirestore.instance
-              .collection('users')
-              .doc(_user!.uid)
-              .collection('groceryItems')
-          : null;
+  late final CollectionReference? _itemsRef = _user != null
+      ? FirebaseFirestore.instance
+      .collection('users')
+      .doc(_user!.uid)
+      .collection('groceryItems')
+      : null;
+
+  List<String> _aiPredictions = [];
 
   @override
   void dispose() {
-    // Dispose controllers to free up resources
     _itemController.dispose();
     _quantityController.dispose();
     super.dispose();
   }
 
-  // Add a new item to the Firestore collection
   Future<void> _addItem() async {
     if (_itemsRef == null) return;
 
@@ -50,20 +47,45 @@ class _HomePageState extends State<HomePage> {
       'timestamp': FieldValue.serverTimestamp(),
     });
 
-    // Clear input fields after adding the item
     _itemController.clear();
     _quantityController.clear();
   }
 
-  // Remove an item from the Firestore collection
   Future<void> _removeItem(String docId) async {
     if (_itemsRef == null) return;
     await _itemsRef!.doc(docId).delete();
   }
 
+  Future<void> _fetchAIPredictions() async {
+    if (_itemsRef == null) return;
+
+    try {
+      final snapshot = await _itemsRef!.get();
+      final history = snapshot.docs
+          .map((doc) => (doc.data() as Map<String, dynamic>)['name'] as String)
+          .toList();
+
+      final response = await http.post(
+        Uri.parse('http://10.0.2.2:5000/predict'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'history': history}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          _aiPredictions = List<String>.from(data['predictions']);
+        });
+      } else {
+        print('API error: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Prediction error: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // If no user is logged in, display a message
     if (_user == null) {
       return Scaffold(
         body: Center(child: Text('No user is currently logged in.')),
@@ -92,7 +114,6 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         actions: [
-          // Logout button
           IconButton(
             icon: Icon(Icons.logout, color: Colors.white),
             tooltip: 'Logout',
@@ -114,7 +135,6 @@ class _HomePageState extends State<HomePage> {
           ),
           child: Column(
             children: [
-              // Display the list of grocery items
               Expanded(
                 child: StreamBuilder<QuerySnapshot>(
                   stream: _itemsRef!.orderBy('timestamp').snapshots(),
@@ -132,10 +152,7 @@ class _HomePageState extends State<HomePage> {
                       );
                     }
                     return ListView.builder(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       itemCount: docs.length,
                       itemBuilder: (context, i) {
                         final doc = docs[i];
@@ -149,20 +166,13 @@ class _HomePageState extends State<HomePage> {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: ListTile(
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
+                            contentPadding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                             title: Text(name, style: TextStyle(fontSize: 20)),
-                            subtitle: Text(
-                              'Quantity: $qty',
-                              style: TextStyle(fontSize: 16),
-                            ),
+                            subtitle: Text('Quantity: $qty',
+                                style: TextStyle(fontSize: 16)),
                             trailing: IconButton(
-                              icon: Icon(
-                                Icons.delete_outline,
-                                color: Colors.redAccent,
-                              ),
+                              icon: Icon(Icons.delete_outline, color: Colors.redAccent),
                               onPressed: () => _removeItem(doc.id),
                             ),
                           ),
@@ -172,7 +182,40 @@ class _HomePageState extends State<HomePage> {
                   },
                 ),
               ),
-              // Input fields and button to add a new item
+
+              // AI Suggest Button
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: ElevatedButton.icon(
+                  onPressed: _fetchAIPredictions,
+                  icon: Icon(Icons.auto_awesome),
+                  label: Text('AI Suggest Items'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal.shade600,
+                    foregroundColor: Colors.white,
+                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                ),
+              ),
+
+              // Show AI predictions
+              if (_aiPredictions.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Text(
+                    'AI Recommendations:',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                ..._aiPredictions.map(
+                      (item) => ListTile(
+                    leading: Icon(Icons.recommend, color: Colors.teal),
+                    title: Text(item),
+                  ),
+                ),
+              ],
+
+              // Input area
               Container(
                 padding: EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -188,7 +231,6 @@ class _HomePageState extends State<HomePage> {
                 ),
                 child: Row(
                   children: [
-                    // Input field for item name
                     Expanded(
                       child: TextField(
                         controller: _itemController,
@@ -205,7 +247,6 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     SizedBox(width: 12),
-                    // Input field for item quantity
                     SizedBox(
                       width: 80,
                       child: TextField(
@@ -224,14 +265,11 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     SizedBox(width: 12),
-                    // Button to add the item
                     ElevatedButton(
                       onPressed: _addItem,
                       style: ElevatedButton.styleFrom(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 14,
-                        ),
+                        padding:
+                        EdgeInsets.symmetric(horizontal: 24, vertical: 14),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
